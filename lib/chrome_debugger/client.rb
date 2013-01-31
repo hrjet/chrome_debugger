@@ -23,20 +23,20 @@ module ChromeDebugger
       @chrome_path = find_chrome_binary
     end
 
-    def self.open(&block)
+    def self.open(chromeArgs, &block)
       headless = Headless.new
       headless.start
       chrome = ChromeDebugger::Client.new
-      chrome.start_chrome
+      chrome.start_chrome(chromeArgs)
       yield chrome
     ensure
       chrome.cleanup
       headless.destroy
     end
 
-    def start_chrome
+    def start_chrome(chromeArgs)
       @profile_dir = File.join(Dir.tmpdir, SecureRandom.hex(10))
-      @chrome_cmd  = "#{@chrome_path} --user-data-dir=#{@profile_dir} -remote-debugging-port=#{REMOTE_DEBUGGING_PORT} --no-first-run > /dev/null 2>&1"
+      @chrome_cmd  = "'#{@chrome_path}' #{chromeArgs} --user-data-dir=#{@profile_dir} -remote-debugging-port=#{REMOTE_DEBUGGING_PORT} --no-first-run > /dev/null 2>&1"
       puts @chrome_cmd
       @chrome_pid  = Process.spawn(@chrome_cmd, :pgroup => true)
 
@@ -45,11 +45,18 @@ module ChromeDebugger
       end
     end
 
-    def load_url(url)
+    def load_url(url, clearCache)
       raise "call the start_chrome() method first" unless @chrome_pid
       document = ChromeDebugger::Document.new(url)
-      load(document)
+      load(document, clearCache)
       document
+    end
+
+    def setCaching(cacheEnabled)
+      raise "call the start_chrome() method first" unless @chrome_pid
+      document = ChromeDebugger::Document.new("http://localhost/")
+      setCachingPrivate(document, cacheEnabled)
+      document.onload_event
     end
 
     def cleanup
@@ -94,7 +101,7 @@ module ChromeDebugger
       end
     end
 
-    def load(document)
+    def setCachingPrivate(document, cacheEnabled)
       EM.run do
         EM::add_periodic_timer(0.5) do
           EM.stop_event_loop if document.onload_event
@@ -114,8 +121,44 @@ module ChromeDebugger
           ws.onopen = lambda do |event|
             ws.send JSON.dump({id: 1, method: 'Page.enable'})
             ws.send JSON.dump({id: 2, method: 'Network.enable'})
-            ws.send JSON.dump({id: 3, method: 'Network.setCacheDisabled', params: {cacheDisabled: true}})
-            ws.send JSON.dump({id: 4, method: 'Network.clearBrowserCache'})
+            ws.send JSON.dump({id: 3, method: 'Network.setCacheDisabled', params: {cacheDisabled: !cacheEnabled}})
+            if (!cacheEnabled)
+              ws.send JSON.dump({id: 4, method: 'Network.clearBrowserCache'})
+            end
+            ws.send JSON.dump({
+              id: 5,
+              method: 'Page.navigate',
+              params: {url: document.url}
+            })
+          end
+        end
+      end
+    end
+
+    def load(document, clearCache)
+      EM.run do
+        EM::add_periodic_timer(0.5) do
+          EM.stop_event_loop if document.onload_event
+        end
+
+        conn = EM::HttpRequest.new("http://localhost:#{REMOTE_DEBUGGING_PORT}/json").get
+        conn.callback do
+          response = JSON.parse(conn.response)
+
+          ws = Faye::WebSocket::Client.new response.first['webSocketDebuggerUrl']
+
+          ws.onmessage = lambda do |message|
+            data = JSON.parse(message.data)
+            handle_data(document, data)
+          end
+
+          ws.onopen = lambda do |event|
+            ws.send JSON.dump({id: 1, method: 'Page.enable'})
+            ws.send JSON.dump({id: 2, method: 'Network.enable'})
+#ws.send JSON.dump({id: 3, method: 'Network.setCacheDisabled', params: {cacheDisabled: true}})
+            if (clearCache)
+              ws.send JSON.dump({id: 4, method: 'Network.clearBrowserCache'})
+            end
             ws.send JSON.dump({
               id: 5,
               method: 'Page.navigate',
