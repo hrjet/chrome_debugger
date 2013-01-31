@@ -155,7 +155,6 @@ module ChromeDebugger
           ws.onopen = lambda do |event|
             ws.send JSON.dump({id: 1, method: 'Page.enable'})
             ws.send JSON.dump({id: 2, method: 'Network.enable'})
-#ws.send JSON.dump({id: 3, method: 'Network.setCacheDisabled', params: {cacheDisabled: true}})
             if (clearCache)
               ws.send JSON.dump({id: 4, method: 'Network.clearBrowserCache'})
             end
